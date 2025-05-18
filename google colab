@@ -1,0 +1,144 @@
+import pandas as pd
+
+df = pd.read_csv('/content/customer_support_tickets.csv')
+df.head(2)
+
+from transformers import T5Tokenizer, T5ForConditionalGeneration ,Trainer ,TrainingArguments
+
+
+
+df['query']=df['Ticket Description']
+
+df['Ticket Status'][0]
+
+df['query'] = df.apply(lambda row: row['query'].replace('{product_purchased}', row['Product Purchased']), axis=1)
+
+main_df = df[['query','Ticket Status']]
+
+
+main_df.head(2)
+
+!pip install contractions
+
+df['query'][6]
+
+import string
+import re
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer,PorterStemmer
+nltk.download('stopwords')
+nltk.download('wordnet')
+from contractions import fix
+
+nltk.download('punkt')
+nltk.download('punkt_tab')
+
+stop_word=set(stopwords.words('english'))
+
+lemmatizer= WordNetLemmatizer()
+
+from os.path import join
+def clean_text(text):
+  text=text.lower()
+  text=fix(text)
+  text= re.sub(r'[^\w\s\n]','',text)
+  text = re.sub(r'<.*?','',text)
+  text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+  text = text.translate(str.maketrans('', '', string.punctuation))
+  text = nltk.word_tokenize(text)
+  text = [word for word in text if word not in stop_word]
+  return " ".join(text)
+
+df['query']=df['query'].apply(clean_text)
+df['Ticket Status']=df['Ticket Status'].apply(clean_text)
+
+main_df = df[['query','Ticket Status']]
+
+from sklearn.model_selection import train_test_split
+train_df,val_df=train_test_split(main_df,test_size=0.2,random_state=42)
+train_df.shape
+val_df.shape
+
+train_data= train_df.reset_index(drop=True)
+val_data= val_df.reset_index(drop=True)
+
+train_data.shape
+
+val_data.shape
+
+tokenizer= T5Tokenizer.from_pretrained("t5-base")
+
+
+def preprocess_function(example):
+  inputs = tokenizer(example['query'],padding="max_length",truncation=True,max_length=210)
+  outputs = tokenizer(example['Ticket Status'],padding="max_length",truncation=True,max_length=210)
+  inputs['labels'] = outputs['input_ids']
+  return inputs
+train_dataset = train_data.apply(preprocess_function,axis=1)
+val_dataset = val_data.apply(preprocess_function,axis=1)
+
+
+train_dataset[0]
+
+model=T5ForConditionalGeneration.from_pretrained("t5-base")
+
+training_args=TrainingArguments(
+    output_dir="./results",
+    num_train_epochs=2,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    warmup_steps=500,
+    weight_decay=0.01,
+    logging_dir="./logs",
+    logging_steps=10,
+    eval_strategy="steps",
+    eval_steps=100,
+    save_strategy="steps",
+    save_steps=100,
+    save_total_limit=2,
+    load_best_model_at_end=True,
+)
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+
+)
+trainer.train()
+
+model.save_pretrained("./chatbott_model")
+tokenizer.save_pretrained("./chatbott_model")
+model= T5ForConditionalGeneration.from_pretrained("./chatbott_model")
+tokenizer= T5Tokenizer.from_pretrained("./chatbott_model")
+
+device= model.device
+device
+
+def chatbot(query):
+  query = clean_text(query)
+  input_ids= tokenizer.encode(query,return_tensors="pt",max_length=210,truncation=True)
+  inputs= {key: value.to(device) for key , value in input_ids.items()}
+  outputs = model.generate(
+      input_ids=input_ids['input_ids'],
+      max_length=210,
+      num_beams=5,
+      num_return_sequences=1,
+      early_stopping=True
+  )
+  return tokenizer.decode(outputs[0],skip_special_tokens=True)
+
+
+while True:
+  user_input = input("you : ")
+  if user_input.lower() == "exit":
+    break
+  response = chatbot(user_input)
+  print("chatbot:",response)
+
+
+import shutil
+shutil.make_archive('chatbott_model', 'zip', 'chatbott_model')
+from google.colab import files
+files.download('chatbott_model.zip')
